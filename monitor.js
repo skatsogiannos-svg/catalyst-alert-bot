@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 24/7 Cloud Catalyst & SEC Monitor for GitHub Actions
 // Pure Node.js - Zero dependencies
-// Delivers specific Actionable Trade Plans: Entry, Stop Loss, Take Profit 1 & 2, Risk/Reward!
+// Delivers specific Actionable Trade Plans for BOTH Positive (Long) and Negative (Short / Avoid) Catalysts!
 
 import https from "node:https";
 import http from "node:http";
@@ -27,7 +27,8 @@ const POSITIVE_KEYWORDS = [
 const NEGATIVE_KEYWORDS = [
   "failed to meet", "did not meet", "missed primary endpoint",
   "complete response letter", "clinical hold", "discontinues phase",
-  "cuts guidance", "lowers full year", "doj probe", "sec investigation"
+  "cuts guidance", "lowers full year", "doj probe", "sec investigation",
+  "delisting notice", "bankruptcy", "chapter 11", "restatement of financial"
 ];
 
 const FEEDS = [
@@ -101,31 +102,52 @@ async function getLivePriceData(ticker) {
   }
 }
 
-function calculateTradePlan(marketData) {
+function calculateLongPlan(marketData) {
   const price = marketData.price;
   const high52 = marketData.high52 || price * 1.5;
 
-  // Stop loss: -7.5% from entry (controlled risk for catalyst breakout)
   const stopLoss = Number((price * 0.925).toFixed(2));
   const risk = price - stopLoss;
-
-  // Take Profit 1: +22% (Quick momentum expansion)
   const tp1 = Number((price * 1.22).toFixed(2));
-  const reward1 = tp1 - price;
-
-  // Take Profit 2: 52-week high or +50%
   const tp2 = Number(Math.max(price * 1.5, high52).toFixed(2));
+  const rrRatio = risk > 0 ? ((tp1 - price) / risk).toFixed(1) : "2.9";
 
-  const rrRatio = risk > 0 ? (reward1 / risk).toFixed(1) : "2.9";
+  return `
+📊 <b>ΣΧΕΔΙΟ ΑΝΟΔΙΚΗΣ ΣΥΝΑΛΛΑΓΗΣ (LONG PLAN):</b>
+• <b>Ζώνη Εισόδου (Entry):</b> <code>$${(price * 0.99).toFixed(2)} - $${(price * 1.01).toFixed(2)}</code>
+• <b>Stop Loss:</b> <code>$${stopLoss} (-7.5%)</code>
+• <b>Take Profit 1:</b> <code>$${tp1} (+22.0%)</code>
+• <b>Take Profit 2 (Max):</b> <code>$${tp2}</code>
+• <b>Σχέση R:R:</b> <code>1:${rrRatio}</code>
+`;
+}
 
-  return {
-    entryZone: `$${(price * 0.99).toFixed(2)} - $${(price * 1.01).toFixed(2)}`,
-    stopLoss: `$${stopLoss} (-7.5%)`,
-    tp1: `$${tp1} (+22.0%)`,
-    tp2: `$${tp2}`,
-    riskReward: `1:${rrRatio}`,
-    currentPrice: `$${price.toFixed(2)}`,
-  };
+function calculateShortPlan(marketData) {
+  const price = marketData.price;
+  const low52 = marketData.low52 || price * 0.5;
+
+  // Short Stop Loss is above current price (+7.0%)
+  const stopLoss = Number((price * 1.07).toFixed(2));
+  const risk = stopLoss - price;
+
+  // Short Downside Targets
+  const tp1 = Number((price * 0.78).toFixed(2)); // -22% fall
+  const tp2 = Number(Math.min(price * 0.55, low52).toFixed(2)); // -45% to 52-week low
+  const reward1 = price - tp1;
+  const rrRatio = risk > 0 ? (reward1 / risk).toFixed(1) : "3.1";
+
+  return `
+⚠️ <b>ΕΠΕΙΓΟΥΣΑ ΠΡΟΕΙΔΟΠΟΙΗΣΗ ΚΑΤΑΡΡΕΥΣΗΣ (RISK ALERT):</b>
+• <b>Σύσταση:</b> 🚫 <b>ΑΜΕΣΗ ΑΠΟΦΥΓΗ ΑΓΟΡΑΣ</b> (Μην πιάνετε πέφτοντα μαχαίρια!).
+• <b>Αν κατέχετε τη μετοχή:</b> Εξέταση άμεσης ρευστοποίησης (Exit) για αποφυγή περαιτέρω κατάρρευσης.
+
+📉 <b>ΣΧΕΔΙΟ ΠΤΩΤΙΚΗΣ ΣΥΝΑΛΛΑΓΗΣ (SHORT / PUT OPTIONS):</b>
+• <b>Ζώνη Εισόδου Short:</b> <code>$${(price * 0.99).toFixed(2)} - $${(price * 1.01).toFixed(2)}</code>
+• <b>Stop Loss (Short):</b> <code>$${stopLoss} (+7.0%)</code>
+• <b>Πτωτικός Στόχος 1:</b> <code>$${tp1} (-22.0%)</code>
+• <b>Πτωτικός Στόχος 2:</b> <code>$${tp2} (52-Week Low)</code>
+• <b>Σχέση R:R:</b> <code>1:${rrRatio}</code>
+`;
 }
 
 function sendTelegram(html) {
@@ -195,27 +217,20 @@ async function run() {
         const isNeg = NEGATIVE_KEYWORDS.some((kw) => lower.includes(kw));
 
         if (isPos || isNeg) {
-          // Extract ticker
           const tickerMatch = /\(([A-Z]{1,5})\)|\bNASDAQ:\s*([A-Z]{1,5})\b|\bNYSE:\s*([A-Z]{1,5})\b|\$([A-Z]{1,5})\b/.exec(item.title);
           const ticker = tickerMatch ? (tickerMatch[1] || tickerMatch[2] || tickerMatch[3] || tickerMatch[4]) : "NEWS";
 
           let tradeSection = "";
-          if (isPos && ticker !== "NEWS") {
+          if (ticker !== "NEWS") {
             const marketData = await getLivePriceData(ticker);
             if (marketData) {
-              const plan = calculateTradePlan(marketData);
-              tradeSection = `
-📊 <b>ΣΧΕΔΙΟ ΣΥΝΑΛΛΑΓΗΣ (TRADE PLAN):</b>
-• <b>Ζώνη Εισόδου (Entry):</b> <code>${plan.entryZone}</code>
-• <b>Stop Loss:</b> <code>${plan.stopLoss}</code>
-• <b>Take Profit 1:</b> <code>${plan.tp1}</code>
-• <b>Take Profit 2 (Max):</b> <code>${plan.tp2}</code>
-• <b>Σχέση R:R:</b> <code>${plan.riskReward}</code>
-`;
+              tradeSection = isPos ? calculateLongPlan(marketData) : calculateShortPlan(marketData);
             }
           }
 
-          const badge = isPos ? "🟢 <b>ΘΕΤΙΚΟΣ ΚΑΤΑΛΥΤΗΣ (BUY ALERT)</b>" : "🔴 <b>ΑΡΝΗΤΙΚΟΣ ΚΑΤΑΛΥΤΗΣ (AVOID)</b>";
+          const badge = isPos
+            ? "🟢 <b>ΘΕΤΙΚΟΣ ΚΑΤΑΛΥΤΗΣ (BUY / LONG ALERT)</b>"
+            : "🔴 <b>ΑΡΝΗΤΙΚΟΣ ΚΑΤΑΛΥΤΗΣ (AVOID / SHORT ALERT)</b>";
 
           const msg = `
 🚨 <b>ACTIONABLE CATALYST SIGNAL</b> 🚨
@@ -229,7 +244,7 @@ ${tradeSection}
 
 ⚡ <i>Αυτόματο σήμα από το Cloud Catalyst Engine</i>
 `;
-          console.log(`[ALERT] ${ticker}: ${item.title}`);
+          console.log(`[ALERT] ${ticker} (${isPos ? 'POS' : 'NEG'}): ${item.title}`);
           await sendTelegram(msg);
           newAlertCount++;
         }
