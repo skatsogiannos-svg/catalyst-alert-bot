@@ -1,7 +1,11 @@
 #!/usr/bin/env node
-// 24/7 Cloud Catalyst & SEC Monitor for GitHub Actions
-// Pure Node.js - Zero dependencies
-// Delivers specific Actionable Trade Plans for BOTH Positive (Long) and Negative (Short / Avoid) Catalysts!
+// 24/7 Universal Multi-Asset Cloud Catalyst Engine
+// Covers:
+// 1. Stocks & Biotech (FDA, Phase 2/3, Earnings, M&A)
+// 2. Crypto (BTC, ETH, SOL - ETF approvals, Regulation, Reserves)
+// 3. Energy (Oil, Natural Gas - OPEC+, Middle East, Inventories)
+// 4. Metals (Gold, Silver, Copper - Central Banks, Fed Rates, Supply)
+// Delivers specific Actionable Trade Plans: Entry, Stop Loss, Take Profit 1 & 2, Risk/Reward!
 
 import https from "node:https";
 import http from "node:http";
@@ -15,27 +19,67 @@ const SEEN_FILE = path.join(ROOT, "seen.json");
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-const POSITIVE_KEYWORDS = [
-  "met primary endpoint", "statistically significant", "positive topline",
-  "fda approves", "fda approved", "fda grants", "fda clearance",
-  "breakthrough therapy", "fast track designation", "priority review",
-  "positive phase 2", "positive phase 3", "positive phase 1",
-  "raises guidance", "raised full year", "beats estimates",
-  "to be acquired by", "merger agreement", "strategic partnership"
-];
-
-const NEGATIVE_KEYWORDS = [
-  "failed to meet", "did not meet", "missed primary endpoint",
-  "complete response letter", "clinical hold", "discontinues phase",
-  "cuts guidance", "lowers full year", "doj probe", "sec investigation",
-  "delisting notice", "bankruptcy", "chapter 11", "restatement of financial"
-];
-
 const FEEDS = [
-  { name: "GlobeNewswire Health", url: "https://www.globenewswire.com/rssfeed/industry/Health%20Care" },
-  { name: "PR Newswire Health", url: "https://www.prnewswire.com/rss/health-latest-news/health-latest-news-list.rss" },
-  { name: "Yahoo Finance Headlines", url: "https://finance.yahoo.com/news/rssindex" }
+  // 1. Equities & Biotech
+  { name: "GlobeNewswire Health", cat: "STOCK", url: "https://www.globenewswire.com/rssfeed/industry/Health%20Care" },
+  { name: "PR Newswire Health", cat: "STOCK", url: "https://www.prnewswire.com/rss/health-latest-news/health-latest-news-list.rss" },
+  { name: "Yahoo Finance Headlines", cat: "STOCK", url: "https://finance.yahoo.com/news/rssindex" },
+
+  // 2. Crypto
+  { name: "Cointelegraph", cat: "CRYPTO", url: "https://cointelegraph.com/rss" },
+  { name: "CoinDesk", cat: "CRYPTO", url: "https://www.coindesk.com/arc/outboundfeeds/rss" },
+
+  // 3. Energy & Commodities
+  { name: "OilPrice.com", cat: "ENERGY", url: "https://oilprice.com/rss/main" }
 ];
+
+// Keywords by Asset Class
+const KEYWORDS = {
+  STOCK: {
+    pos: [
+      "met primary endpoint", "statistically significant", "positive topline",
+      "fda approves", "fda approved", "fda grants", "fda clearance",
+      "breakthrough therapy", "fast track designation", "priority review",
+      "positive phase 2", "positive phase 3", "raises guidance", "merger agreement"
+    ],
+    neg: [
+      "failed to meet", "did not meet", "missed primary endpoint",
+      "complete response letter", "clinical hold", "discontinues phase",
+      "cuts guidance", "sec investigation", "delisting notice"
+    ]
+  },
+  CRYPTO: {
+    pos: [
+      "etf approved", "etf approval", "sec approves", "bitcoin reserve",
+      "strategic reserve", "institutional adoption", "inflows record",
+      "rate cut", "treasury adoption", "major upgrade"
+    ],
+    neg: [
+      "sec sues", "sec charges", "hack", "exploit", "stolen", "banned",
+      "crackdown", "liquidation cascade", "insolvency", "freezes withdrawals"
+    ]
+  },
+  ENERGY: {
+    pos: [
+      "opec cuts", "opec+ cuts", "production cut", "inventory draw",
+      "crude inventories fall", "pipeline shutdown", "supply disruption",
+      "escalation in middle east", "straits of hormuz"
+    ],
+    neg: [
+      "opec increases", "opec hikes output", "crude inventories surge",
+      "inventory build", "ceasefire", "oil glut", "demand slump"
+    ]
+  },
+  METALS: {
+    pos: [
+      "central bank buys gold", "record gold buying", "gold reserve",
+      "copper supply deficit", "mine shutdown", "dollar plunges"
+    ],
+    neg: [
+      "dollar surges", "rate hike", "gold selling", "copper surplus"
+    ]
+  }
+};
 
 function fetchText(url) {
   return new Promise((resolve, reject) => {
@@ -62,7 +106,7 @@ function fetchText(url) {
   });
 }
 
-function parseRss(xml, sourceName) {
+function parseRss(xml, sourceName, cat) {
   const items = [];
   const itemMatches = xml.matchAll(/<item>([\s\S]*?)<\/item>/g);
   for (const m of itemMatches) {
@@ -78,22 +122,21 @@ function parseRss(xml, sourceName) {
         title,
         link,
         source: sourceName,
+        cat,
       });
     }
   }
   return items;
 }
 
-async function getLivePriceData(ticker) {
-  if (!ticker || ticker === "NEWS") return null;
+async function getLivePrice(sym) {
   try {
-    const raw = await fetchText(`https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=5d&interval=1d`);
+    const raw = await fetchText(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=5d&interval=1d`);
     const j = JSON.parse(raw);
     const meta = j?.chart?.result?.[0]?.meta;
     if (!meta || !meta.regularMarketPrice) return null;
     return {
       price: meta.regularMarketPrice,
-      prevClose: meta.chartPreviousClose,
       high52: meta.fiftyTwoWeekHigh,
       low52: meta.fiftyTwoWeekLow,
     };
@@ -102,52 +145,83 @@ async function getLivePriceData(ticker) {
   }
 }
 
-function calculateLongPlan(marketData) {
-  const price = marketData.price;
-  const high52 = marketData.high52 || price * 1.5;
+function calculatePlan(category, priceData, isPos) {
+  const price = priceData.price;
+  let slPct = 0.07;
+  let tp1Pct = 0.20;
+  let tp2Pct = 0.45;
 
-  const stopLoss = Number((price * 0.925).toFixed(2));
-  const risk = price - stopLoss;
-  const tp1 = Number((price * 1.22).toFixed(2));
-  const tp2 = Number(Math.max(price * 1.5, high52).toFixed(2));
-  const rrRatio = risk > 0 ? ((tp1 - price) / risk).toFixed(1) : "2.9";
+  if (category === "CRYPTO") {
+    slPct = 0.05;
+    tp1Pct = 0.15;
+    tp2Pct = 0.35;
+  } else if (category === "ENERGY") {
+    slPct = 0.04;
+    tp1Pct = 0.12;
+    tp2Pct = 0.25;
+  } else if (category === "METALS") {
+    slPct = 0.025;
+    tp1Pct = 0.06;
+    tp2Pct = 0.15;
+  }
 
-  return `
+  const formatPrice = (v) => v > 500 ? v.toLocaleString('en-US', { maximumFractionDigits: 1 }) : v.toFixed(2);
+
+  if (isPos) {
+    const sl = Number((price * (1 - slPct)).toFixed(2));
+    const tp1 = Number((price * (1 + tp1Pct)).toFixed(2));
+    const tp2 = Number((price * (1 + tp2Pct)).toFixed(2));
+    const rr = ((tp1 - price) / (price - sl)).toFixed(1);
+
+    return `
 📊 <b>ΣΧΕΔΙΟ ΑΝΟΔΙΚΗΣ ΣΥΝΑΛΛΑΓΗΣ (LONG PLAN):</b>
-• <b>Ζώνη Εισόδου (Entry):</b> <code>$${(price * 0.99).toFixed(2)} - $${(price * 1.01).toFixed(2)}</code>
-• <b>Stop Loss:</b> <code>$${stopLoss} (-7.5%)</code>
-• <b>Take Profit 1:</b> <code>$${tp1} (+22.0%)</code>
-• <b>Take Profit 2 (Max):</b> <code>$${tp2}</code>
-• <b>Σχέση R:R:</b> <code>1:${rrRatio}</code>
+• <b>Ζώνη Εισόδου (Entry):</b> <code>$${formatPrice(price * 0.995)} - $${formatPrice(price * 1.005)}</code>
+• <b>Stop Loss:</b> <code>$${formatPrice(sl)} (-${(slPct * 100).toFixed(1)}%)</code>
+• <b>Take Profit 1:</b> <code>$${formatPrice(tp1)} (+${(tp1Pct * 100).toFixed(1)}%)</code>
+• <b>Take Profit 2 (Max):</b> <code>$${formatPrice(tp2)} (+${(tp2Pct * 100).toFixed(1)}%)</code>
+• <b>Σχέση R:R:</b> <code>1:${rr}</code>
 `;
+  } else {
+    const sl = Number((price * (1 + slPct)).toFixed(2));
+    const tp1 = Number((price * (1 - tp1Pct)).toFixed(2));
+    const tp2 = Number((price * (1 - tp2Pct)).toFixed(2));
+    const rr = ((price - tp1) / (sl - price)).toFixed(1);
+
+    return `
+⚠️ <b>ΕΠΕΙΓΟΥΣΑ ΠΡΟΕΙΔΟΠΟΙΗΣΗ ΠΤΩΣΗΣ:</b>
+• <b>Σύσταση:</b> 🚫 <b>ΑΜΕΣΗ ΑΠΟΦΥΓΗ / ΕΞΟΔΟΣ (EXIT)</b>
+
+📉 <b>ΣΧΕΔΙΟ ΠΤΩΤΙΚΗΣ ΣΥΝΑΛΛΑΓΗΣ (SHORT):</b>
+• <b>Ζώνη Εισόδου Short:</b> <code>$${formatPrice(price * 0.995)} - $${formatPrice(price * 1.005)}</code>
+• <b>Stop Loss (Short):</b> <code>$${formatPrice(sl)} (+${(slPct * 100).toFixed(1)}%)</code>
+• <b>Πτωτικός Στόχος 1:</b> <code>$${formatPrice(tp1)} (-${(tp1Pct * 100).toFixed(1)}%)</code>
+• <b>Πτωτικός Στόχος 2:</b> <code>$${formatPrice(tp2)} (-${(tp2Pct * 100).toFixed(1)}%)</code>
+• <b>Σχέση R:R:</b> <code>1:${rr}</code>
+`;
+  }
 }
 
-function calculateShortPlan(marketData) {
-  const price = marketData.price;
-  const low52 = marketData.low52 || price * 0.5;
-
-  // Short Stop Loss is above current price (+7.0%)
-  const stopLoss = Number((price * 1.07).toFixed(2));
-  const risk = stopLoss - price;
-
-  // Short Downside Targets
-  const tp1 = Number((price * 0.78).toFixed(2)); // -22% fall
-  const tp2 = Number(Math.min(price * 0.55, low52).toFixed(2)); // -45% to 52-week low
-  const reward1 = price - tp1;
-  const rrRatio = risk > 0 ? (reward1 / risk).toFixed(1) : "3.1";
-
-  return `
-⚠️ <b>ΕΠΕΙΓΟΥΣΑ ΠΡΟΕΙΔΟΠΟΙΗΣΗ ΚΑΤΑΡΡΕΥΣΗΣ (RISK ALERT):</b>
-• <b>Σύσταση:</b> 🚫 <b>ΑΜΕΣΗ ΑΠΟΦΥΓΗ ΑΓΟΡΑΣ</b> (Μην πιάνετε πέφτοντα μαχαίρια!).
-• <b>Αν κατέχετε τη μετοχή:</b> Εξέταση άμεσης ρευστοποίησης (Exit) για αποφυγή περαιτέρω κατάρρευσης.
-
-📉 <b>ΣΧΕΔΙΟ ΠΤΩΤΙΚΗΣ ΣΥΝΑΛΛΑΓΗΣ (SHORT / PUT OPTIONS):</b>
-• <b>Ζώνη Εισόδου Short:</b> <code>$${(price * 0.99).toFixed(2)} - $${(price * 1.01).toFixed(2)}</code>
-• <b>Stop Loss (Short):</b> <code>$${stopLoss} (+7.0%)</code>
-• <b>Πτωτικός Στόχος 1:</b> <code>$${tp1} (-22.0%)</code>
-• <b>Πτωτικός Στόχος 2:</b> <code>$${tp2} (52-Week Low)</code>
-• <b>Σχέση R:R:</b> <code>1:${rrRatio}</code>
-`;
+function resolveAssetSymbol(category, title) {
+  const upper = title.toUpperCase();
+  if (category === "CRYPTO") {
+    if (upper.includes("ETHEREUM") || upper.includes("ETH")) return { sym: "ETH-USD", name: "Ethereum (ETH)" };
+    if (upper.includes("SOLANA") || upper.includes("SOL")) return { sym: "SOL-USD", name: "Solana (SOL)" };
+    if (upper.includes("RIPPLE") || upper.includes("XRP")) return { sym: "XRP-USD", name: "XRP" };
+    return { sym: "BTC-USD", name: "Bitcoin (BTC)" };
+  }
+  if (category === "ENERGY") {
+    if (upper.includes("GAS") || upper.includes("LNG")) return { sym: "UNG", name: "Natural Gas (UNG / NG)" };
+    return { sym: "CL=F", name: "WTI Crude Oil (Πετρέλαιο)" };
+  }
+  if (category === "METALS") {
+    if (upper.includes("SILVER") || upper.includes("ΑΣΗΜΙ")) return { sym: "SLV", name: "Silver (Ασήμι)" };
+    if (upper.includes("COPPER") || upper.includes("ΧΑΛΚΟΣ")) return { sym: "HG=F", name: "Copper (Χαλκός)" };
+    return { sym: "GC=F", name: "Gold (Χρυσός)" };
+  }
+  // Stocks
+  const tickerMatch = /\(([A-Z]{1,5})\)|\bNASDAQ:\s*([A-Z]{1,5})\b|\bNYSE:\s*([A-Z]{1,5})\b|\$([A-Z]{1,5})\b/.exec(title);
+  const ticker = tickerMatch ? (tickerMatch[1] || tickerMatch[2] || tickerMatch[3] || tickerMatch[4]) : null;
+  return ticker ? { sym: ticker, name: ticker } : null;
 }
 
 function sendTelegram(html) {
@@ -191,7 +265,7 @@ function sendTelegram(html) {
 }
 
 async function run() {
-  console.log("=== 24/7 Cloud Catalyst Scanner Starting ===");
+  console.log("=== 24/7 Universal Catalyst Scanner Starting ===");
   let seen = [];
   try {
     if (fs.existsSync(SEEN_FILE)) {
@@ -206,45 +280,63 @@ async function run() {
   for (const feed of FEEDS) {
     try {
       const xml = await fetchText(feed.url);
-      const items = parseRss(xml, feed.name);
+      const items = parseRss(xml, feed.name, feed.cat);
       
       for (const item of items) {
         if (!item.link || seenSet.has(item.link)) continue;
         seenSet.add(item.link);
 
         const lower = item.title.toLowerCase();
-        const isPos = POSITIVE_KEYWORDS.some((kw) => lower.includes(kw));
-        const isNeg = NEGATIVE_KEYWORDS.some((kw) => lower.includes(kw));
+        let cat = item.cat;
+
+        // Auto-detect metals in general feeds
+        if (lower.includes("gold") || lower.includes("silver") || lower.includes("copper")) {
+          cat = "METALS";
+        } else if (lower.includes("oil") || lower.includes("opec") || lower.includes("crude") || lower.includes("natural gas")) {
+          cat = "ENERGY";
+        }
+
+        const catKws = KEYWORDS[cat] || KEYWORDS.STOCK;
+        const isPos = catKws.pos.some((kw) => lower.includes(kw));
+        const isNeg = catKws.neg.some((kw) => lower.includes(kw));
 
         if (isPos || isNeg) {
-          const tickerMatch = /\(([A-Z]{1,5})\)|\bNASDAQ:\s*([A-Z]{1,5})\b|\bNYSE:\s*([A-Z]{1,5})\b|\$([A-Z]{1,5})\b/.exec(item.title);
-          const ticker = tickerMatch ? (tickerMatch[1] || tickerMatch[2] || tickerMatch[3] || tickerMatch[4]) : "NEWS";
+          const asset = resolveAssetSymbol(cat, item.title);
+          const assetName = asset ? asset.name : cat;
+          const assetSym = asset ? asset.sym : null;
 
           let tradeSection = "";
-          if (ticker !== "NEWS") {
-            const marketData = await getLivePriceData(ticker);
-            if (marketData) {
-              tradeSection = isPos ? calculateLongPlan(marketData) : calculateShortPlan(marketData);
+          if (assetSym) {
+            const priceData = await getLivePrice(assetSym);
+            if (priceData) {
+              tradeSection = calculatePlan(cat, priceData, isPos);
             }
           }
+
+          const catIcons = {
+            CRYPTO: "🪙 CRYPTO",
+            ENERGY: "🛢️ ΕΝΕΡΓΕΙΑ / ΠΕΤΡΕΛΑΙΟ",
+            METALS: "🥇 ΜΕΤΑΛΛΑ / ΧΡΥΣΟΣ",
+            STOCK: "💊 ΜΕΤΟΧΕΣ / BIOTECH"
+          };
 
           const badge = isPos
             ? "🟢 <b>ΘΕΤΙΚΟΣ ΚΑΤΑΛΥΤΗΣ (BUY / LONG ALERT)</b>"
             : "🔴 <b>ΑΡΝΗΤΙΚΟΣ ΚΑΤΑΛΥΤΗΣ (AVOID / SHORT ALERT)</b>";
 
           const msg = `
-🚨 <b>ACTIONABLE CATALYST SIGNAL</b> 🚨
+🚨 <b>${catIcons[cat] || "MARKET"} CATALYST SIGNAL</b> 🚨
 
-<b>Ticker:</b> <code>${ticker}</code>
+<b>Asset:</b> <code>${assetName}</code>
 <b>Ετυμηγορία:</b> ${badge}
 ${tradeSection}
-📰 <b>Ανακοίνωση:</b> ${item.title}
+📰 <b>Γεγονός:</b> ${item.title}
 <b>Πηγή:</b> ${item.source}
-🔗 <a href="${item.link}">Διαβάστε το Πρωτότυπο Δελτίο Τύπου</a>
+🔗 <a href="${item.link}">Διαβάστε την Πρωτότυπη Πηγή</a>
 
-⚡ <i>Αυτόματο σήμα από το Cloud Catalyst Engine</i>
+⚡ <i>Αυτόματο σήμα από το Cloud Multi-Asset Engine</i>
 `;
-          console.log(`[ALERT] ${ticker} (${isPos ? 'POS' : 'NEG'}): ${item.title}`);
+          console.log(`[ALERT] [${cat}] ${assetName} (${isPos ? 'POS' : 'NEG'}): ${item.title}`);
           await sendTelegram(msg);
           newAlertCount++;
         }
@@ -254,7 +346,7 @@ ${tradeSection}
     }
   }
 
-  const updatedSeen = Array.from(seenSet).slice(-500);
+  const updatedSeen = Array.from(seenSet).slice(-600);
   fs.writeFileSync(SEEN_FILE, JSON.stringify(updatedSeen, null, 2), "utf8");
 
   console.log(`=== Ολοκληρώθηκε: ${newAlertCount} νέες ειδοποιήσεις εστάλησαν ===`);
