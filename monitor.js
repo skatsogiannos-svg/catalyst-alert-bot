@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // 24/7 Cloud Catalyst & SEC Monitor for GitHub Actions
 // Pure Node.js - Zero dependencies
+// Delivers specific Actionable Trade Plans: Entry, Stop Loss, Take Profit 1 & 2, Risk/Reward!
 
 import https from "node:https";
 import http from "node:http";
@@ -42,7 +43,7 @@ function fetchText(url) {
       url,
       {
         headers: {
-          "User-Agent": "AmberCloudCatalyst/1.0 (+https://github.com)",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
         },
         timeout: 9000,
       },
@@ -82,8 +83,53 @@ function parseRss(xml, sourceName) {
   return items;
 }
 
+async function getLivePriceData(ticker) {
+  if (!ticker || ticker === "NEWS") return null;
+  try {
+    const raw = await fetchText(`https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=5d&interval=1d`);
+    const j = JSON.parse(raw);
+    const meta = j?.chart?.result?.[0]?.meta;
+    if (!meta || !meta.regularMarketPrice) return null;
+    return {
+      price: meta.regularMarketPrice,
+      prevClose: meta.chartPreviousClose,
+      high52: meta.fiftyTwoWeekHigh,
+      low52: meta.fiftyTwoWeekLow,
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+function calculateTradePlan(marketData) {
+  const price = marketData.price;
+  const high52 = marketData.high52 || price * 1.5;
+
+  // Stop loss: -7.5% from entry (controlled risk for catalyst breakout)
+  const stopLoss = Number((price * 0.925).toFixed(2));
+  const risk = price - stopLoss;
+
+  // Take Profit 1: +22% (Quick momentum expansion)
+  const tp1 = Number((price * 1.22).toFixed(2));
+  const reward1 = tp1 - price;
+
+  // Take Profit 2: 52-week high or +50%
+  const tp2 = Number(Math.max(price * 1.5, high52).toFixed(2));
+
+  const rrRatio = risk > 0 ? (reward1 / risk).toFixed(1) : "2.9";
+
+  return {
+    entryZone: `$${(price * 0.99).toFixed(2)} - $${(price * 1.01).toFixed(2)}`,
+    stopLoss: `$${stopLoss} (-7.5%)`,
+    tp1: `$${tp1} (+22.0%)`,
+    tp2: `$${tp2}`,
+    riskReward: `1:${rrRatio}`,
+    currentPrice: `$${price.toFixed(2)}`,
+  };
+}
+
 function sendTelegram(html) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     if (!BOT_TOKEN || !CHAT_ID) {
       console.log("[i] Δεν έχουν οριστεί TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID (skip notification).");
       return resolve(false);
@@ -116,7 +162,7 @@ function sendTelegram(html) {
         });
       }
     );
-    req.on("error", reject);
+    req.on("error", () => resolve(false));
     req.write(payload);
     req.end();
   });
@@ -133,7 +179,6 @@ async function run() {
     seen = [];
   }
   const seenSet = new Set(seen);
-
   let newAlertCount = 0;
 
   for (const feed of FEEDS) {
@@ -142,7 +187,7 @@ async function run() {
       const items = parseRss(xml, feed.name);
       
       for (const item of items) {
-        if (seenSet.has(item.link)) continue;
+        if (!item.link || seenSet.has(item.link)) continue;
         seenSet.add(item.link);
 
         const lower = item.title.toLowerCase();
@@ -150,21 +195,39 @@ async function run() {
         const isNeg = NEGATIVE_KEYWORDS.some((kw) => lower.includes(kw));
 
         if (isPos || isNeg) {
-          const tickerMatch = /\(([A-Z]{1,5})\)|\bNASDAQ:\s*([A-Z]{1,5})\b|\$([A-Z]{1,5})\b/.exec(item.title);
-          const ticker = tickerMatch ? (tickerMatch[1] || tickerMatch[2] || tickerMatch[3]) : "NEWS";
+          // Extract ticker
+          const tickerMatch = /\(([A-Z]{1,5})\)|\bNASDAQ:\s*([A-Z]{1,5})\b|\bNYSE:\s*([A-Z]{1,5})\b|\$([A-Z]{1,5})\b/.exec(item.title);
+          const ticker = tickerMatch ? (tickerMatch[1] || tickerMatch[2] || tickerMatch[3] || tickerMatch[4]) : "NEWS";
+
+          let tradeSection = "";
+          if (isPos && ticker !== "NEWS") {
+            const marketData = await getLivePriceData(ticker);
+            if (marketData) {
+              const plan = calculateTradePlan(marketData);
+              tradeSection = `
+📊 <b>ΣΧΕΔΙΟ ΣΥΝΑΛΛΑΓΗΣ (TRADE PLAN):</b>
+• <b>Ζώνη Εισόδου (Entry):</b> <code>${plan.entryZone}</code>
+• <b>Stop Loss:</b> <code>${plan.stopLoss}</code>
+• <b>Take Profit 1:</b> <code>${plan.tp1}</code>
+• <b>Take Profit 2 (Max):</b> <code>${plan.tp2}</code>
+• <b>Σχέση R:R:</b> <code>${plan.riskReward}</code>
+`;
+            }
+          }
 
           const badge = isPos ? "🟢 <b>ΘΕΤΙΚΟΣ ΚΑΤΑΛΥΤΗΣ (BUY ALERT)</b>" : "🔴 <b>ΑΡΝΗΤΙΚΟΣ ΚΑΤΑΛΥΤΗΣ (AVOID)</b>";
 
           const msg = `
-🚨 <b>CLOUD CATALYST ALERT</b> 🚨
+🚨 <b>ACTIONABLE CATALYST SIGNAL</b> 🚨
 
 <b>Ticker:</b> <code>${ticker}</code>
-<b>Τύπος:</b> ${badge}
-<b>Τίτλος:</b> ${item.title}
+<b>Ετυμηγορία:</b> ${badge}
+${tradeSection}
+📰 <b>Ανακοίνωση:</b> ${item.title}
 <b>Πηγή:</b> ${item.source}
-🔗 <a href="${item.link}">Διαβάστε το Δελτίο Τύπου</a>
+🔗 <a href="${item.link}">Διαβάστε το Πρωτότυπο Δελτίο Τύπου</a>
 
-⚡ <i>Αυτόματη ειδοποίηση από το GitHub Cloud 24/7 Bot</i>
+⚡ <i>Αυτόματο σήμα από το Cloud Catalyst Engine</i>
 `;
           console.log(`[ALERT] ${ticker}: ${item.title}`);
           await sendTelegram(msg);
@@ -176,7 +239,6 @@ async function run() {
     }
   }
 
-  // Keep seen array bounded to last 500 links
   const updatedSeen = Array.from(seenSet).slice(-500);
   fs.writeFileSync(SEEN_FILE, JSON.stringify(updatedSeen, null, 2), "utf8");
 
