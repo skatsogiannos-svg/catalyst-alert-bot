@@ -1,0 +1,36 @@
+name: 24/7 Catalyst & FDA Monitor
+
+on:
+  schedule:
+    # Runs every 10 minutes from 11:00 UTC to 21:00 UTC (Pre-market to Close), Monday to Friday
+    - cron: '*/10 11-21 * * 1-5'
+  workflow_dispatch: # Allows manual trigger from GitHub UI anytime
+
+permissions:
+  contents: write
+
+jobs:
+  scan-and-alert:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run Catalyst Monitor
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: node monitor.js
+
+      - name: Commit Updated Seen History
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add seen.json
+          git diff-index --quiet HEAD || git commit -m "chore: update seen news cache [skip ci]"
+          git push || true

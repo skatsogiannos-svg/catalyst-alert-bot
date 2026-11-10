@@ -1,0 +1,9 @@
+{
+  "name": "catalyst-alert-bot",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "24/7 Cloud Breaking Catalyst & FDA News Alert Bot via Telegram",
+  "scripts": {
+    "start": "node monitor.js"
+  }
+}
