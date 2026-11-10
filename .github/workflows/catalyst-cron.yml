@@ -2,9 +2,9 @@ name: 24/7 Catalyst & FDA Monitor
 
 on:
   schedule:
-    # Runs every 10 minutes from 11:00 UTC to 21:00 UTC (Pre-market to Close), Monday to Friday
-    - cron: '*/10 11-21 * * 1-5'
-  workflow_dispatch: # Allows manual trigger from GitHub UI anytime
+    # Runs every 5 minutes from 09:00 UTC to 22:00 UTC (covering full Pre-Market, Regular Hours & After-Hours), Mon to Fri
+    - cron: '*/5 9-22 * * 1-5'
+  workflow_dispatch: # Allows manual trigger anytime
 
 permissions:
   contents: write
