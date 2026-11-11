@@ -165,7 +165,12 @@ function buildLaserCard(assetName, priceData, isPos, title, link) {
 function sendTelegram(html) {
   return new Promise((resolve) => {
     if (!BOT_TOKEN || !CHAT_ID) return resolve(false);
-    const payload = JSON.stringify({ chat_id: CHAT_ID, text: html, parse_mode: "HTML" });
+    const payload = JSON.stringify({
+      chat_id: CHAT_ID,
+      text: html,
+      parse_mode: "HTML",
+      disable_notification: false,
+    });
     const req = https.request(
       `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
       { method: "POST", headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } },
