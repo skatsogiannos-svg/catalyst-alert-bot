@@ -1,0 +1,34 @@
+name: Test Telegram Ping
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'test-trigger.txt'
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Test Telegram Notification
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          node -e "
+            import https from 'node:https';
+            const token = process.env.TELEGRAM_BOT_TOKEN;
+            const chat = process.env.TELEGRAM_CHAT_ID;
+            const text = '🔔 <b>ΔΟΚΙΜΑΣΤΙΚΟ ΣΗΜΑ ΕΙΔΟΠΟΙΗΣΗΣ (TEST ALERT)</b>\n━━━━━━━━━━━━━━━━━━━━━━\n🎯 <b>Έλεγχος Ήχου & Pop-up!</b>\nΑν βλέπετε αυτό το μήνυμα στην οθόνη σας με ήχο, το σύστημα λειτουργεί 100% άψογα!';
+            const payload = JSON.stringify({ chat_id: chat, text, parse_mode: 'HTML', disable_notification: false });
+            const req = https.request('https://api.telegram.org/bot' + token + '/sendMessage', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+            }, (res) => {
+              let d = '';
+              res.on('data', c => d += c);
+              res.on('end', () => console.log('Telegram response:', d));
+            });
+            req.write(payload);
+            req.end();
+          "
